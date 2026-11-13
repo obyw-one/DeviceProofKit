@@ -112,8 +112,16 @@ def last_frame_time(video: pathlib.Path, duration: float) -> float:
     times = [float(v) for v in proc.stdout.decode().split() if v.replace(".", "", 1).isdigit()]
     if not times:
         return max(duration - 0.05, 0)
+    # `ffmpeg -ss` counts from the stream's first timestamp, not from pts 0:
+    # an iPad recording starts at 0.0767 s, so a seek to the raw pts of its
+    # last frame (29.993 s) lands 0.077 s past it and decodes nothing (iPad,
+    # 2026-11-13). The seek is made on ffmpeg's timeline.
+    start = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=start_time",
+                 "-of", "csv=p=0", str(video)]).stdout.decode().split(",")[0].strip()
+    # (csv prints "0.076667," — a trailing field for the stream's side data.)
+    offset = float(start) if start.replace(".", "", 1).isdigit() else 0.0
     # A hair before the frame's own time, so the seek lands on it, not past it.
-    return max(max(times) - 0.001, 0)
+    return max(max(times) - offset - 0.001, 0)
 
 
 def filters(rotation: int, width: int, height: int) -> str:
@@ -172,6 +180,27 @@ def screen_px(layout: dict) -> tuple[int, int]:
     return round(layout["screenWidth"] * layout["scale"]), round(layout["screenHeight"] * layout["scale"])
 
 
+def screenshot_of(name: str, test: dict, files: pathlib.Path) -> tuple[pathlib.Path | None, str | None]:
+    """The upright PNG a capture named `name` attached, and any name collision.
+
+    `base_name` keys attachments by the name the test gave them, so a text
+    attachment with a capture's name (a test's `keep("fit-verdicts", ...)`
+    beside `capture("fit-verdicts", ...)`) used to replace the screenshot,
+    which then failed as "could not decode a recording frame" (iPad,
+    2026-11-13). The screenshot is the PNG; the collision is reported by name.
+    """
+    same = [a for a in test["attachments"] if base_name(a) == name]
+    pngs = [a["exportedFileName"] for a in same if a["exportedFileName"].lower().endswith(".png")]
+    others = [a["exportedFileName"] for a in same if not a["exportedFileName"].lower().endswith(".png")]
+    collision = None
+    if len(pngs) > 1:
+        collision = f"{len(pngs)} PNG attachments are named '{name}' ({', '.join(pngs)}): which one is the screenshot is ambiguous"
+        return None, collision
+    if others:
+        collision = f"attachment name '{name}' is also used by {', '.join(others)}; the screenshot is the PNG {pngs[0] if pngs else '(none)'}"
+    return (files / pngs[0] if pngs else None), collision
+
+
 def captures_of(test: dict, files: pathlib.Path) -> list[dict]:
     """Every capture of a test: its frame.json, the pattern samples if any, the upright PNG."""
     by_base = {base_name(a): a for a in test["attachments"]}
@@ -186,18 +215,18 @@ def captures_of(test: dict, files: pathlib.Path) -> list[dict]:
             continue
         frame = json.loads((files / att["exportedFileName"]).read_text())
         name = frame["name"]
-        shot = by_base.get(name)
+        shot, collision = screenshot_of(name, test, files)
         pattern = patterns.get(name, {})
         captures.append({"name": name, "capturedAt": frame["capturedAt"], "layout": frame["layout"],
                          "samples": [s for s in pattern.get("samples", []) if s.get("checkInVideo")],
-                         "screenshot": files / shot["exportedFileName"] if shot else None})
+                         "screenshot": shot, "collision": collision})
     # Runs from before frame.json existed: the pattern alone describes the capture.
     for name, pattern in patterns.items():
         if not any(c["name"] == name for c in captures):
-            shot = by_base.get(name)
+            shot, collision = screenshot_of(name, test, files)
             captures.append({"name": name, "capturedAt": pattern["capturedAt"], "layout": pattern["layout"],
                              "samples": [s for s in pattern["samples"] if s.get("checkInVideo")],
-                             "screenshot": files / shot["exportedFileName"] if shot else None})
+                             "screenshot": shot, "collision": collision})
     return sorted(captures, key=lambda c: c["capturedAt"])
 
 
@@ -228,8 +257,12 @@ def check_test(test: dict, files: pathlib.Path, out: pathlib.Path) -> list[dict]
             row["frame_rule"] = f"screen unchanged after {meta['duration']:.2f}s: last frame used for t={at:.2f}s"
         t_frame = min(max(at, 0), last)
         row["t_frame"] = t_frame
+        if c.get("collision"):
+            # Named in the report either way; it fails only when no single PNG
+            # can be told to be the screenshot (screenshot is then None).
+            row["attachment_notes"] = [c["collision"]]
         if c["screenshot"] is None:
-            row["problems"].append("upright screenshot attachment not found")
+            row["problems"].append(c.get("collision") or "upright screenshot attachment not found")
             rows.append(row)
             continue
         scores, errors_by_rotation = {}, {}
@@ -329,7 +362,8 @@ def main() -> int:
         lines.append(f"| {r['test']} | {r['capture']} | {r.get('interfaceOrientation')} | {r.get('screen')} | "
                      f"{r.get('raw_video')} | {r.get('rotation_needed_deg')}° ({r.get('rotation_error_ratio')}x) | {r.get('raw_stretch')}x | "
                      f"{r.get('video_samples', '—')} | {r.get('upright_size')} | {r.get('upright_ssim')} | "
-                     f"{'PASS' if r['pass'] else 'FAIL: ' + '; '.join(r['problems'])} |")
+                     f"{'PASS' if r['pass'] else 'FAIL: ' + '; '.join(r['problems'])}"
+                     f"{''.join(' (note: ' + n + ')' for n in r.get('attachment_notes', []))} |")
     report = "\n".join(lines)
     (out / "check-report.md").write_text(report + "\n")
     print(report)
