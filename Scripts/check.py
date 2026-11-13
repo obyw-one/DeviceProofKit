@@ -99,6 +99,23 @@ def probe(video: pathlib.Path) -> dict:
             "duration": float(data.get("format", {}).get("duration", 0))}
 
 
+def last_frame_time(video: pathlib.Path, duration: float) -> float:
+    """The presentation time of the recording's last frame.
+
+    Not the container duration: on a still screen the recorder writes no new
+    frame while the file keeps running, so the last frame can sit well before
+    the end (simulator, 2026-11-13: last frame at 3.68 s in a 4.37 s file) and
+    a seek to `duration - 0.05` decodes nothing.
+    """
+    proc = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time",
+                "-of", "csv=p=0", str(video)])
+    times = [float(v) for v in proc.stdout.decode().split() if v.replace(".", "", 1).isdigit()]
+    if not times:
+        return max(duration - 0.05, 0)
+    # A hair before the frame's own time, so the seek lands on it, not past it.
+    return max(max(times) - 0.001, 0)
+
+
 def filters(rotation: int, width: int, height: int) -> str:
     return ",".join(f for f in (ROTATIONS[rotation], f"scale={width}:{height}") if f)
 
@@ -196,7 +213,7 @@ def check_test(test: dict, files: pathlib.Path, out: pathlib.Path) -> list[dict]
     video = files / video_att["exportedFileName"]
     meta = probe(video)
     start, start_source = recording_start(video, video_att.get("timestamp", 0.0))
-    last = max(meta["duration"] - 0.05, 0)
+    last = last_frame_time(video, meta["duration"])
 
     rows = []
     for c in captures:
