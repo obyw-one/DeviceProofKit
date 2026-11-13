@@ -1,0 +1,18 @@
+# kagami scopes for DeviceProofKit — the one way to run this package's tests
+# (never `swift test` from an agent). Hand-authored source of truth; the
+# generated `.kagami/scopes.toml` cache is ignored.
+#
+# Arrays stay on ONE line each: kagami's TOML reader rejects multi-line arrays.
+# The XCUITest side (DeviceProofTestSupport) runs on a device or simulator in
+# a consuming app's UI-test target, not here.
+
+[[scopes]]
+name = "DeviceProofKit"
+language = "swift"
+package_path = "."
+test_target_name = "DeviceProofKitTests"
+type_patterns = ["CalibrationPatternTests", "LayoutReportTests", "DeviceProbeTests", "ScreenIdentifierTests"]
+test_file_patterns = ["**/DeviceProofKitTests/*.swift"]
+timeout_seconds = 600
+expected_test_min = 15
+description = "Calibration card geometry + checker JSON contract, layout report, launch arguments, screen identifiers. Run: kagami test --scope DeviceProofKit"
