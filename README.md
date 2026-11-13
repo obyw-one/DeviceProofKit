@@ -111,4 +111,4 @@ The capture side runs in a consuming app's UI-test target on a simulator or devi
 
 ## License
 
-AGPL-3.0 (see `LICENSE`), © OBYW.one.
+Apache-2.0 (see `LICENSE` and `NOTICE`), © OBYW.one. Apps link this library, so it carries the same license as the other fleet kits (ChatKit, CMSKit, AuthKit).
